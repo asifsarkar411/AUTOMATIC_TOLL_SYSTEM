@@ -1,0 +1,48 @@
+#include <SoftwareSerial.h>
+
+// Define RX and TX pins for GSM module communication
+#define GSM_RX 2
+#define GSM_TX 3
+
+SoftwareSerial gsm(GSM_RX, GSM_TX);  // GSM module communication on RX=2, TX=3
+
+void setup() {
+  Serial.begin(9600);       // Start serial communication for debugging
+  gsm.begin(9600);          // Start GSM communication
+  
+  Serial.println("Slave Arduino with GSM Initialized.");
+}
+
+void loop() {
+  // Check if there's any incoming data from the main Arduino
+  if (Serial.available()) {
+    String receivedData = Serial.readString();
+    Serial.println("Received from Main Arduino: " + receivedData);
+    
+    // Process the received data and perform actions
+    if (receivedData == "Payment Successful") {
+      // Send SMS when payment is successful
+      sendSMS("+8801743648510", "Payment of 50 Taka successful.");
+    } else if (receivedData == "Payment Timeout") {
+      // Handle timeout (e.g., send an SMS or perform other actions)
+      sendSMS("+8801743648510", "Payment Timeout Occurred.");
+    } else if (receivedData == "Insufficient Balance") {
+      // Handle insufficient balance
+      sendSMS("+8801743648510", "Insufficient balance for payment.");
+    }
+  }
+}
+
+void sendSMS(String phoneNumber, String message) {
+  // Send SMS using the GSM module
+  gsm.print("AT+CMGF=1\r"); // Set SMS format to text mode
+  delay(100);
+  gsm.print("AT+CMGS=\"" + phoneNumber + "\"\r"); // Set phone number
+  delay(100);
+  gsm.print(message); // Send the message
+  delay(100);
+  gsm.write(26); // CTRL+Z to send the SMS
+  delay(5000);   // Wait for the message to be sent
+  
+  Serial.println("SMS sent to " + phoneNumber);
+}
