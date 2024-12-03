@@ -1,0 +1,186 @@
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Servo.h>
+#include <LiquidCrystal_I2C.h>
+#include <SoftwareSerial.h>
+
+#define RST_PIN 9
+#define SS_PIN 10
+#define TRIG_PIN 6
+#define ECHO_PIN 7
+#define IR_PIN 4
+#define SERVO_PIN 5
+#define BUTTON_PIN 2
+#define GSM_TX 3
+#define GSM_RX 2
+
+MFRC522 mfrc522(SS_PIN, RST_PIN);
+Servo gateServo;
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+SoftwareSerial gsm(GSM_RX, GSM_TX);
+
+SoftwareSerial serialComm(3, 4);  // RX, TX for communication with second Arduino
+
+// Predefined RFID Cards and Balances
+struct RFIDCard {
+  String uid;
+  int balance;
+};
+
+RFIDCard rfidCards[] = {
+  {"F3E45216", 200},
+  {"A1B2C3D4", 100}
+};
+const int tollFee = 50;
+
+void setup() {
+  Serial.begin(9600);
+  SPI.begin();
+  mfrc522.PCD_Init();
+
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Toll Booth Ready");
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(IR_PIN, INPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  gateServo.attach(SERVO_PIN);
+  gateServo.write(0);
+
+  gsm.begin(115200);
+  serialComm.begin(9600); // Start serial communication with the second Arduino
+  Serial.println("System Initialized.");
+}
+
+void loop() {
+  // Detect a vehicle using the ultrasonic sensor
+  if (detectVehicle()) {
+    lcd.setCursor(0, 0);
+    lcd.print("Vehicle Detected ");
+    delay(500);
+    lcd.clear();
+
+    // Detect an RFID card
+    if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+      String cardID = getCardID();
+      int balanceIndex = getBalanceIndex(cardID);
+      lcd.setCursor(0, 0);
+
+      if (balanceIndex != -1) {
+        if (rfidCards[balanceIndex].balance >= tollFee) {
+          lcd.print("Pay 50 Taka?");
+          Serial.println("Press the button to pay.");
+
+          bool paymentConfirmed = false;
+          unsigned long startTime = millis();
+          while (millis() - startTime < 10000) {
+            if (digitalRead(BUTTON_PIN) == LOW) {
+              paymentConfirmed = true;
+              break;
+            }
+          }
+
+          if (paymentConfirmed) {
+            rfidCards[balanceIndex].balance -= tollFee;
+            lcd.setCursor(0, 1);
+            lcd.print("Payment Success ");
+            Serial.println("Payment successful.");
+
+            // Send payment status to the second Arduino
+            serialComm.println("Payment Successful");
+
+            // Send SMS Notification
+            String message = "Payment of 50 Taka successful. Remaining balance: " + String(rfidCards[balanceIndex].balance) + " Taka.";
+            sendSMS("+8801743648510", message);
+
+            openGate();
+          } else {
+            lcd.setCursor(0, 1);
+            lcd.print("Payment Timeout");
+            Serial.println("Payment timeout.");
+            serialComm.println("Payment Timeout");
+          }
+        } else {
+          lcd.print("Insufficient Bal");
+          Serial.println("Insufficient balance.");
+          serialComm.println("Insufficient Balance");
+          delay(2000);
+        }
+      } else {
+        lcd.print("Card Not Recognized");
+        Serial.println("Card not recognized.");
+        serialComm.println("Card Not Recognized");
+        delay(2000);
+      }
+      mfrc522.PICC_HaltA();
+      lcd.clear();
+    }
+  } else {
+    lcd.setCursor(0, 0);
+    lcd.print("Waiting for Car ");
+    delay(500);
+    lcd.clear();
+  }
+}
+
+bool detectVehicle() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long duration = pulseIn(ECHO_PIN, HIGH);
+  int distance = duration * 0.034 / 2;
+  return (distance < 50);
+}
+
+String getCardID() {
+  String cardID = "";
+  for (byte i = 0; i < mfrc522.uid.size; i++) {
+    if (mfrc522.uid.uidByte[i] < 0x10) cardID += "0";
+    cardID += String(mfrc522.uid.uidByte[i], HEX);
+  }
+  cardID.toUpperCase();
+  return cardID;
+}
+
+int getBalanceIndex(String uid) {
+  for (int i = 0; i < sizeof(rfidCards) / sizeof(rfidCards[0]); i++) {
+    if (rfidCards[i].uid == uid) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+void openGate() {
+  Serial.println("Opening gate...");
+  lcd.setCursor(0, 0);
+  lcd.print("Opening Gate...");
+  gateServo.write(90);
+  delay(5000);
+  while (digitalRead(IR_PIN) == LOW);
+  lcd.setCursor(0, 0);
+  lcd.print("Closing Gate...");
+  gateServo.write(0);
+  delay(1500);
+  lcd.clear();
+}
+
+void sendSMS(String phoneNumber, String message) {
+  gsm.print("AT+CMGF=1\r");
+  delay(100);
+  gsm.print("AT+CMGS=\"");
+  gsm.print(phoneNumber);
+  gsm.print("\"\r");
+  delay(100);
+  gsm.print(message);
+  delay(100);
+  gsm.write(26); // CTRL+Z to send SMS
+  delay(5000);
+  Serial.println("SMS sent to " + phoneNumber);
+}
